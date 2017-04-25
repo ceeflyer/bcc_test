@@ -1,0 +1,895 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="642" onload="init(evt)" viewBox="0 0 1200 642" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#e0e0ff" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		if (func != null)
+			func = func.replace(/ .*/, "");
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) {
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+				return a - b;
+			if (a < b || a > b)
+				return a - b;
+			return matches[b] - matches[a];
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="642.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Flame Graph</text>
+<text text-anchor="" x="10.00" y="625" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="625" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>swapper/0 (8,000,051 us, 17.48%)</title><rect x="10.0" y="161" width="206.2" height="15.0" fill="rgb(63,177,177)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >swapper/0</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_64_start_kernel (10,010,133 us, 21.87%)</title><rect x="931.9" y="177" width="258.1" height="15.0" fill="rgb(58,173,173)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >x86_64_start_kernel</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpu_startup_entry (8,999,533 us, 19.66%)</title><rect x="700.0" y="129" width="231.9" height="15.0" fill="rgb(92,203,203)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cpu_startup_entry</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smp_apic_timer_interrupt (10,010,133 us, 21.87%)</title><rect x="931.9" y="321" width="258.1" height="15.0" fill="rgb(92,203,203)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >smp_apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>poll_schedule_timeout (8,999,533 us, 19.66%)</title><rect x="700.0" y="465" width="231.9" height="15.0" fill="rgb(132,132,248)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >poll_schedule_timeout</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_wakeup (9,762,910 us, 21.33%)</title><rect x="448.3" y="401" width="251.7" height="15.0" fill="rgb(89,200,200)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >hrtimer_wakeup</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>group_send_sig_info (8,999,533 us, 19.66%)</title><rect x="700.0" y="305" width="231.9" height="15.0" fill="rgb(96,207,207)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >group_send_sig_info</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title> (10,010,133 us, 21.87%)</title><rect x="931.9" y="161" width="258.1" height="15.0" fill="rgb(65,179,179)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start_kernel (9,001,153 us, 19.66%)</title><rect x="216.2" y="257" width="232.1" height="15.0" fill="rgb(74,187,187)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >start_kernel</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rest_init (8,999,533 us, 19.66%)</title><rect x="700.0" y="113" width="231.9" height="15.0" fill="rgb(59,173,173)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >rest_init</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ntpd (8,999,533 us, 19.66%)</title><rect x="700.0" y="577" width="231.9" height="15.0" fill="rgb(122,122,240)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ntpd</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_select (10,010,133 us, 21.87%)</title><rect x="931.9" y="513" width="258.1" height="15.0" fill="rgb(115,115,234)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sys_select</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (8,000,051 us, 17.48%)</title><rect x="10.0" y="529" width="206.2" height="15.0" fill="rgb(80,80,205)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >entry_SYSCALL_64_fastpath</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (9,001,153 us, 19.66%)</title><rect x="216.2" y="465" width="232.1" height="15.0" fill="rgb(93,93,215)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__hrtimer_run_queues (8,999,533 us, 19.66%)</title><rect x="700.0" y="257" width="231.9" height="15.0" fill="rgb(53,168,168)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__hrtimer_run_queues</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_idle_call (9,762,910 us, 21.33%)</title><rect x="448.3" y="273" width="251.7" height="15.0" fill="rgb(58,172,172)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >default_idle_call</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-- (8,000,051 us, 17.48%)</title><rect x="10.0" y="417" width="206.2" height="15.0" fill="rgb(160,160,160)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >--</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_64_start_kernel (9,762,910 us, 21.33%)</title><rect x="448.3" y="193" width="251.7" height="15.0" fill="rgb(56,170,170)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >x86_64_start_kernel</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_64_start_kernel (8,999,533 us, 19.66%)</title><rect x="700.0" y="65" width="231.9" height="15.0" fill="rgb(81,193,193)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >x86_64_start_kernel</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (10,010,133 us, 21.87%)</title><rect x="931.9" y="417" width="258.1" height="15.0" fill="rgb(126,126,243)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>arch_cpu_idle (10,010,133 us, 21.87%)</title><rect x="931.9" y="273" width="258.1" height="15.0" fill="rgb(75,188,188)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >arch_cpu_idle</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>arch_cpu_idle (9,762,910 us, 21.33%)</title><rect x="448.3" y="289" width="251.7" height="15.0" fill="rgb(58,173,173)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >arch_cpu_idle</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_idle (8,000,051 us, 17.48%)</title><rect x="10.0" y="305" width="206.2" height="15.0" fill="rgb(96,207,207)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >default_idle</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>it_real_fn (8,999,533 us, 19.66%)</title><rect x="700.0" y="273" width="231.9" height="15.0" fill="rgb(67,181,181)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >it_real_fn</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>core_sys_select (10,010,133 us, 21.87%)</title><rect x="931.9" y="497" width="258.1" height="15.0" fill="rgb(88,88,212)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >core_sys_select</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_nanosleep (9,001,153 us, 19.66%)</title><rect x="216.2" y="497" width="232.1" height="15.0" fill="rgb(93,93,216)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >hrtimer_nanosleep</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpu_startup_entry (10,010,133 us, 21.87%)</title><rect x="931.9" y="241" width="258.1" height="15.0" fill="rgb(79,192,192)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cpu_startup_entry</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__send_signal (8,999,533 us, 19.66%)</title><rect x="700.0" y="353" width="231.9" height="15.0" fill="rgb(92,204,204)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__send_signal</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rest_init (8,000,051 us, 17.48%)</title><rect x="10.0" y="241" width="206.2" height="15.0" fill="rgb(59,173,173)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >rest_init</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>send_signal (8,999,533 us, 19.66%)</title><rect x="700.0" y="337" width="231.9" height="15.0" fill="rgb(77,190,190)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >send_signal</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>poll_schedule_timeout (9,762,910 us, 21.33%)</title><rect x="448.3" y="481" width="251.7" height="15.0" fill="rgb(87,87,211)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >poll_schedule_timeout</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smp_apic_timer_interrupt (9,001,153 us, 19.66%)</title><rect x="216.2" y="369" width="232.1" height="15.0" fill="rgb(61,175,175)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >smp_apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rest_init (9,762,910 us, 21.33%)</title><rect x="448.3" y="241" width="251.7" height="15.0" fill="rgb(71,184,184)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >rest_init</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>local_apic_timer_interrupt (8,999,533 us, 19.66%)</title><rect x="700.0" y="225" width="231.9" height="15.0" fill="rgb(97,208,208)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >local_apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_poll (9,762,910 us, 21.33%)</title><rect x="448.3" y="513" width="251.7" height="15.0" fill="rgb(82,82,206)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sys_poll</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (9,762,910 us, 21.33%)</title><rect x="448.3" y="433" width="251.7" height="15.0" fill="rgb(83,83,208)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title> (18,764,063 us, 40.99%)</title><rect x="216.2" y="545" width="483.8" height="15.0" fill="rgb(84,84,208)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule_hrtimeout_range (10,010,133 us, 21.87%)</title><rect x="931.9" y="449" width="258.1" height="15.0" fill="rgb(80,80,205)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule_hrtimeout_range</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (18,764,063 us, 40.99%)</title><rect x="216.2" y="529" width="483.8" height="15.0" fill="rgb(83,83,208)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >entry_SYSCALL_64_fastpath</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_idle (9,001,153 us, 19.66%)</title><rect x="216.2" y="337" width="232.1" height="15.0" fill="rgb(93,204,204)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >default_idle</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__hrtimer_run_queues (8,000,051 us, 17.48%)</title><rect x="10.0" y="385" width="206.2" height="15.0" fill="rgb(63,177,177)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__hrtimer_run_queues</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>arch_cpu_idle (9,001,153 us, 19.66%)</title><rect x="216.2" y="321" width="232.1" height="15.0" fill="rgb(72,185,185)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >arch_cpu_idle</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>poll_schedule_timeout (8,000,051 us, 17.48%)</title><rect x="10.0" y="481" width="206.2" height="15.0" fill="rgb(100,100,221)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >poll_schedule_timeout</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (45,773,785 us, 100%)</title><rect x="10.0" y="593" width="1180.0" height="15.0" fill="rgb(134,134,250)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpu_startup_entry (8,000,051 us, 17.48%)</title><rect x="10.0" y="257" width="206.2" height="15.0" fill="rgb(97,208,208)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cpu_startup_entry</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_idle (8,999,533 us, 19.66%)</title><rect x="700.0" y="177" width="231.9" height="15.0" fill="rgb(82,194,194)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >default_idle</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_select (10,010,133 us, 21.87%)</title><rect x="931.9" y="481" width="258.1" height="15.0" fill="rgb(105,105,225)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >do_select</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>swapper/0 (8,999,533 us, 19.66%)</title><rect x="700.0" y="33" width="231.9" height="15.0" fill="rgb(78,191,191)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >swapper/0</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title> (8,999,533 us, 19.66%)</title><rect x="700.0" y="49" width="231.9" height="15.0" fill="rgb(90,202,202)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpu_startup_entry (9,762,910 us, 21.33%)</title><rect x="448.3" y="257" width="251.7" height="15.0" fill="rgb(101,211,211)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cpu_startup_entry</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[unknown] (8,999,533 us, 19.66%)</title><rect x="700.0" y="561" width="231.9" height="15.0" fill="rgb(120,120,239)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >[unknown]</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_64_start_kernel (9,001,153 us, 19.66%)</title><rect x="216.2" y="225" width="232.1" height="15.0" fill="rgb(62,176,176)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >x86_64_start_kernel</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule_hrtimeout_range_clock (10,010,133 us, 21.87%)</title><rect x="931.9" y="433" width="258.1" height="15.0" fill="rgb(85,85,209)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule_hrtimeout_range_clock</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>core_sys_select (8,999,533 us, 19.66%)</title><rect x="700.0" y="497" width="231.9" height="15.0" fill="rgb(105,105,226)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >core_sys_select</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>complete_signal (8,999,533 us, 19.66%)</title><rect x="700.0" y="369" width="231.9" height="15.0" fill="rgb(83,195,195)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >complete_signal</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (8,999,533 us, 19.66%)</title><rect x="700.0" y="529" width="231.9" height="15.0" fill="rgb(105,105,225)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >entry_SYSCALL_64_fastpath</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>swapper/0 (9,001,153 us, 19.66%)</title><rect x="216.2" y="193" width="232.1" height="15.0" fill="rgb(106,217,217)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >swapper/0</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_64_start_reservations (10,010,133 us, 21.87%)</title><rect x="931.9" y="193" width="258.1" height="15.0" fill="rgb(71,184,184)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >x86_64_start_reservations</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-- (10,010,133 us, 21.87%)</title><rect x="931.9" y="401" width="258.1" height="15.0" fill="rgb(160,160,160)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >--</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>poll_schedule_timeout (10,010,133 us, 21.87%)</title><rect x="931.9" y="465" width="258.1" height="15.0" fill="rgb(100,100,222)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >poll_schedule_timeout</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_interrupt (10,010,133 us, 21.87%)</title><rect x="931.9" y="353" width="258.1" height="15.0" fill="rgb(106,216,216)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >hrtimer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start_kernel (8,999,533 us, 19.66%)</title><rect x="700.0" y="97" width="231.9" height="15.0" fill="rgb(103,213,213)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >start_kernel</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_64_start_reservations (8,999,533 us, 19.66%)</title><rect x="700.0" y="81" width="231.9" height="15.0" fill="rgb(60,174,174)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >x86_64_start_reservations</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (8,999,533 us, 19.66%)</title><rect x="700.0" y="417" width="231.9" height="15.0" fill="rgb(123,123,241)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>offwaketime (10,010,138 us, 21.87%)</title><rect x="931.9" y="577" width="258.1" height="15.0" fill="rgb(120,120,238)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >offwaketime</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-- (8,999,533 us, 19.66%)</title><rect x="700.0" y="401" width="231.9" height="15.0" fill="rgb(160,160,160)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >--</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smp_apic_timer_interrupt (8,000,051 us, 17.48%)</title><rect x="10.0" y="337" width="206.2" height="15.0" fill="rgb(103,214,214)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >smp_apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-- (9,762,910 us, 21.33%)</title><rect x="448.3" y="417" width="251.7" height="15.0" fill="rgb(160,160,160)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >--</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_interrupt (9,001,153 us, 19.66%)</title><rect x="216.2" y="401" width="232.1" height="15.0" fill="rgb(87,199,199)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >hrtimer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>local_apic_timer_interrupt (10,010,133 us, 21.87%)</title><rect x="931.9" y="337" width="258.1" height="15.0" fill="rgb(62,176,176)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >local_apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_wakeup (8,000,051 us, 17.48%)</title><rect x="10.0" y="401" width="206.2" height="15.0" fill="rgb(74,187,187)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >hrtimer_wakeup</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title> (9,001,153 us, 19.66%)</title><rect x="216.2" y="209" width="232.1" height="15.0" fill="rgb(70,183,183)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title> (9,762,910 us, 21.33%)</title><rect x="448.3" y="177" width="251.7" height="15.0" fill="rgb(68,182,182)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (10,010,133 us, 21.87%)</title><rect x="931.9" y="529" width="258.1" height="15.0" fill="rgb(125,125,243)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >entry_SYSCALL_64_fastpath</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>local_apic_timer_interrupt (8,000,051 us, 17.48%)</title><rect x="10.0" y="353" width="206.2" height="15.0" fill="rgb(57,171,171)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >local_apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule_hrtimeout_range (8,999,533 us, 19.66%)</title><rect x="700.0" y="449" width="231.9" height="15.0" fill="rgb(111,111,231)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule_hrtimeout_range</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apic_timer_interrupt (8,999,533 us, 19.66%)</title><rect x="700.0" y="193" width="231.9" height="15.0" fill="rgb(72,185,185)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apic_timer_interrupt (9,001,153 us, 19.66%)</title><rect x="216.2" y="353" width="232.1" height="15.0" fill="rgb(102,213,213)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apic_timer_interrupt (8,000,051 us, 17.48%)</title><rect x="10.0" y="321" width="206.2" height="15.0" fill="rgb(81,193,193)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apic_timer_interrupt (9,762,910 us, 21.33%)</title><rect x="448.3" y="321" width="251.7" height="15.0" fill="rgb(75,188,188)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>local_apic_timer_interrupt (9,001,153 us, 19.66%)</title><rect x="216.2" y="385" width="232.1" height="15.0" fill="rgb(92,203,203)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >local_apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rest_init (9,001,153 us, 19.66%)</title><rect x="216.2" y="273" width="232.1" height="15.0" fill="rgb(84,196,196)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >rest_init</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[unknown] (10,010,133 us, 21.87%)</title><rect x="931.9" y="561" width="258.1" height="15.0" fill="rgb(99,99,221)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >[unknown]</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_64_start_reservations (8,000,051 us, 17.48%)</title><rect x="10.0" y="209" width="206.2" height="15.0" fill="rgb(105,215,215)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >x86_64_start_reservations</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title> (8,000,051 us, 17.48%)</title><rect x="10.0" y="545" width="206.2" height="15.0" fill="rgb(98,98,220)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_interrupt (8,999,533 us, 19.66%)</title><rect x="700.0" y="241" width="231.9" height="15.0" fill="rgb(104,214,214)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >hrtimer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_poll (8,000,051 us, 17.48%)</title><rect x="10.0" y="513" width="206.2" height="15.0" fill="rgb(118,118,237)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sys_poll</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smp_apic_timer_interrupt (9,762,910 us, 21.33%)</title><rect x="448.3" y="337" width="251.7" height="15.0" fill="rgb(86,198,198)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >smp_apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_interrupt (9,762,910 us, 21.33%)</title><rect x="448.3" y="369" width="251.7" height="15.0" fill="rgb(93,204,204)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >hrtimer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title> (8,000,051 us, 17.48%)</title><rect x="10.0" y="177" width="206.2" height="15.0" fill="rgb(79,192,192)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpu_startup_entry (9,001,153 us, 19.66%)</title><rect x="216.2" y="289" width="232.1" height="15.0" fill="rgb(79,192,192)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cpu_startup_entry</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_64_start_reservations (9,762,910 us, 21.33%)</title><rect x="448.3" y="209" width="251.7" height="15.0" fill="rgb(105,215,215)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >x86_64_start_reservations</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>swapper/0 (10,010,133 us, 21.87%)</title><rect x="931.9" y="145" width="258.1" height="15.0" fill="rgb(107,217,217)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >swapper/0</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-- (9,001,153 us, 19.66%)</title><rect x="216.2" y="449" width="232.1" height="15.0" fill="rgb(160,160,160)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >--</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start_kernel (10,010,133 us, 21.87%)</title><rect x="931.9" y="209" width="258.1" height="15.0" fill="rgb(50,165,165)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >start_kernel</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_nanosleep (9,001,153 us, 19.66%)</title><rect x="216.2" y="481" width="232.1" height="15.0" fill="rgb(117,117,235)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >do_nanosleep</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>signal_wake_up_state (8,999,533 us, 19.66%)</title><rect x="700.0" y="385" width="231.9" height="15.0" fill="rgb(109,219,219)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >signal_wake_up_state</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_idle_call (8,000,051 us, 17.48%)</title><rect x="10.0" y="273" width="206.2" height="15.0" fill="rgb(74,187,187)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >default_idle_call</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__hrtimer_run_queues (10,010,133 us, 21.87%)</title><rect x="931.9" y="369" width="258.1" height="15.0" fill="rgb(105,215,215)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__hrtimer_run_queues</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>local_apic_timer_interrupt (9,762,910 us, 21.33%)</title><rect x="448.3" y="353" width="251.7" height="15.0" fill="rgb(97,208,208)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >local_apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>gmain (8,000,051 us, 17.48%)</title><rect x="10.0" y="577" width="206.2" height="15.0" fill="rgb(127,127,244)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >gmain</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smp_apic_timer_interrupt (8,999,533 us, 19.66%)</title><rect x="700.0" y="209" width="231.9" height="15.0" fill="rgb(62,176,176)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >smp_apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_wakeup (9,001,153 us, 19.66%)</title><rect x="216.2" y="433" width="232.1" height="15.0" fill="rgb(80,193,193)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >hrtimer_wakeup</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_idle_call (9,001,153 us, 19.66%)</title><rect x="216.2" y="305" width="232.1" height="15.0" fill="rgb(105,215,215)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >default_idle_call</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_idle (9,762,910 us, 21.33%)</title><rect x="448.3" y="305" width="251.7" height="15.0" fill="rgb(77,190,190)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >default_idle</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title> (8,999,533 us, 19.66%)</title><rect x="700.0" y="545" width="231.9" height="15.0" fill="rgb(121,121,239)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[unknown] (18,764,063 us, 40.99%)</title><rect x="216.2" y="561" width="483.8" height="15.0" fill="rgb(135,135,251)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >[unknown]</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_interrupt (8,000,051 us, 17.48%)</title><rect x="10.0" y="369" width="206.2" height="15.0" fill="rgb(82,194,194)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >hrtimer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rest_init (10,010,133 us, 21.87%)</title><rect x="931.9" y="225" width="258.1" height="15.0" fill="rgb(69,183,183)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >rest_init</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule_hrtimeout_range (8,000,051 us, 17.48%)</title><rect x="10.0" y="465" width="206.2" height="15.0" fill="rgb(84,84,208)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule_hrtimeout_range</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule_hrtimeout_range_clock (8,999,533 us, 19.66%)</title><rect x="700.0" y="433" width="231.9" height="15.0" fill="rgb(95,95,218)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule_hrtimeout_range_clock</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_select (8,999,533 us, 19.66%)</title><rect x="700.0" y="513" width="231.9" height="15.0" fill="rgb(105,105,226)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sys_select</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_64_start_kernel (8,000,051 us, 17.48%)</title><rect x="10.0" y="193" width="206.2" height="15.0" fill="rgb(55,169,169)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >x86_64_start_kernel</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[unknown] (8,000,051 us, 17.48%)</title><rect x="10.0" y="561" width="206.2" height="15.0" fill="rgb(132,132,248)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >[unknown]</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start_kernel (8,000,051 us, 17.48%)</title><rect x="10.0" y="225" width="206.2" height="15.0" fill="rgb(70,183,183)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >start_kernel</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__hrtimer_run_queues (9,762,910 us, 21.33%)</title><rect x="448.3" y="385" width="251.7" height="15.0" fill="rgb(71,185,185)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__hrtimer_run_queues</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_idle_call (8,999,533 us, 19.66%)</title><rect x="700.0" y="145" width="231.9" height="15.0" fill="rgb(97,208,208)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >default_idle_call</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__hrtimer_run_queues (9,001,153 us, 19.66%)</title><rect x="216.2" y="417" width="232.1" height="15.0" fill="rgb(102,212,212)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__hrtimer_run_queues</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule_hrtimeout_range_clock (9,762,910 us, 21.33%)</title><rect x="448.3" y="449" width="251.7" height="15.0" fill="rgb(85,85,209)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule_hrtimeout_range_clock</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_select (8,999,533 us, 19.66%)</title><rect x="700.0" y="481" width="231.9" height="15.0" fill="rgb(118,118,236)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >do_select</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>iscsid (18,764,063 us, 40.99%)</title><rect x="216.2" y="577" width="483.8" height="15.0" fill="rgb(102,102,224)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >iscsid</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_sys_poll (8,000,051 us, 17.48%)</title><rect x="10.0" y="497" width="206.2" height="15.0" fill="rgb(137,137,252)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >do_sys_poll</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_wakeup (10,010,133 us, 21.87%)</title><rect x="931.9" y="385" width="258.1" height="15.0" fill="rgb(87,199,199)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >hrtimer_wakeup</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>arch_cpu_idle (8,000,051 us, 17.48%)</title><rect x="10.0" y="289" width="206.2" height="15.0" fill="rgb(69,182,182)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >arch_cpu_idle</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_sys_poll (9,762,910 us, 21.33%)</title><rect x="448.3" y="497" width="251.7" height="15.0" fill="rgb(122,122,240)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >do_sys_poll</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>arch_cpu_idle (8,999,533 us, 19.66%)</title><rect x="700.0" y="161" width="231.9" height="15.0" fill="rgb(90,202,202)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >arch_cpu_idle</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apic_timer_interrupt (10,010,133 us, 21.87%)</title><rect x="931.9" y="305" width="258.1" height="15.0" fill="rgb(53,168,168)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >apic_timer_interrupt</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule_hrtimeout_range_clock (8,000,051 us, 17.48%)</title><rect x="10.0" y="449" width="206.2" height="15.0" fill="rgb(127,127,244)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule_hrtimeout_range_cl..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title> (10,010,133 us, 21.87%)</title><rect x="931.9" y="545" width="258.1" height="15.0" fill="rgb(111,111,231)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start_kernel (9,762,910 us, 21.33%)</title><rect x="448.3" y="225" width="251.7" height="15.0" fill="rgb(99,210,210)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >start_kernel</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (8,000,051 us, 17.48%)</title><rect x="10.0" y="433" width="206.2" height="15.0" fill="rgb(85,85,209)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_nanosleep (9,001,153 us, 19.66%)</title><rect x="216.2" y="513" width="232.1" height="15.0" fill="rgb(128,128,245)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sys_nanosleep</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>swapper/0 (9,762,910 us, 21.33%)</title><rect x="448.3" y="161" width="251.7" height="15.0" fill="rgb(79,192,192)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >swapper/0</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_send_sig_info (8,999,533 us, 19.66%)</title><rect x="700.0" y="321" width="231.9" height="15.0" fill="rgb(106,216,216)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >do_send_sig_info</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>kill_pid_info (8,999,533 us, 19.66%)</title><rect x="700.0" y="289" width="231.9" height="15.0" fill="rgb(92,203,203)" rx="2" ry="2" />
+<text text-anchor="" x="702.95" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >kill_pid_info</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_64_start_reservations (9,001,153 us, 19.66%)</title><rect x="216.2" y="241" width="232.1" height="15.0" fill="rgb(82,195,195)" rx="2" ry="2" />
+<text text-anchor="" x="219.23" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >x86_64_start_reservations</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_idle_call (10,010,133 us, 21.87%)</title><rect x="931.9" y="257" width="258.1" height="15.0" fill="rgb(66,180,180)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >default_idle_call</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule_hrtimeout_range (9,762,910 us, 21.33%)</title><rect x="448.3" y="465" width="251.7" height="15.0" fill="rgb(102,102,223)" rx="2" ry="2" />
+<text text-anchor="" x="451.27" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >schedule_hrtimeout_range</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_idle (10,010,133 us, 21.87%)</title><rect x="931.9" y="289" width="258.1" height="15.0" fill="rgb(78,191,191)" rx="2" ry="2" />
+<text text-anchor="" x="934.95" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >default_idle</text>
+</g>
+</svg>
